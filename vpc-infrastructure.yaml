@@ -1,0 +1,539 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  BEM11 Lab 2 - Highly Available, Multi-AZ VPC with public Web tier (Apache)
+  and private Application tier. All EC2 instances are Amazon Linux 2023 and
+  accessed exclusively through AWS Systems Manager Session Manager.
+  Outbound internet for private subnets is provided via redundant NAT
+  Gateways (one per Availability Zone).
+
+# ---------------------------------------------------------------------------
+# Parameters
+# ---------------------------------------------------------------------------
+Parameters:
+  ProjectName:
+    Type: String
+    Default: BEM11-Lab2-VPC
+    Description: Friendly prefix applied to every tagged resource.
+
+  StudentFullName:
+    Type: String
+    Default: Bernard Mawulorm Kofi Wodoame
+    Description: Full name displayed on the web tier landing page.
+
+  LabName:
+    Type: String
+    Default: BEM11 Lab 2 - Highly Available Multi-AZ VPC
+    Description: Lab name displayed on the web tier landing page.
+
+  VpcCidr:
+    Type: String
+    Default: 10.20.0.0/16
+    AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
+    Description: CIDR block for the VPC.
+
+  PublicSubnet1Cidr:
+    Type: String
+    Default: 10.20.1.0/24
+  PublicSubnet2Cidr:
+    Type: String
+    Default: 10.20.2.0/24
+  PrivateSubnet1Cidr:
+    Type: String
+    Default: 10.20.11.0/24
+  PrivateSubnet2Cidr:
+    Type: String
+    Default: 10.20.12.0/24
+
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    AllowedValues: [t3.micro, t3.small, t3.medium]
+    Description: EC2 instance type used for all tiers.
+
+  LatestAmazonLinux2023Ami:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+    Description: >
+      SSM public parameter that always resolves to the latest Amazon Linux
+      2023 AMI for the current region. Keeps the template region-agnostic.
+
+# ---------------------------------------------------------------------------
+# Resources
+# ---------------------------------------------------------------------------
+Resources:
+
+  # -------------------------------------------------------------------------
+  # 1. Core networking: VPC + Internet Gateway
+  # -------------------------------------------------------------------------
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-vpc
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-igw
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  # -------------------------------------------------------------------------
+  # 2. Subnets (2 public + 2 private across two AZs)
+  # -------------------------------------------------------------------------
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PublicSubnet1Cidr
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-public-subnet-az1
+        - Key: Tier
+          Value: public
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PublicSubnet2Cidr
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-public-subnet-az2
+        - Key: Tier
+          Value: public
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PrivateSubnet1Cidr
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-private-subnet-az1
+        - Key: Tier
+          Value: private
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PrivateSubnet2Cidr
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-private-subnet-az2
+        - Key: Tier
+          Value: private
+
+  # -------------------------------------------------------------------------
+  # 3. Redundant NAT Gateways (one per AZ for high availability)
+  # -------------------------------------------------------------------------
+  NatEip1:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-nat-eip-az1
+
+  NatEip2:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-nat-eip-az2
+
+  NatGateway1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEip1.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-nat-gw-az1
+
+  NatGateway2:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEip2.AllocationId
+      SubnetId: !Ref PublicSubnet2
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-nat-gw-az2
+
+  # -------------------------------------------------------------------------
+  # 4. Route tables
+  # -------------------------------------------------------------------------
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-public-rt
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2RouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  # One private route table per AZ so each private subnet uses its own NAT
+  # Gateway; losing one AZ's NAT does not affect the other AZ.
+  PrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-private-rt-az1
+
+  PrivateDefaultRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway1
+
+  PrivateSubnet1RouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable1
+
+  PrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-private-rt-az2
+
+  PrivateDefaultRoute2:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway2
+
+  PrivateSubnet2RouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable2
+
+  # -------------------------------------------------------------------------
+  # 5. Security Groups
+  # -------------------------------------------------------------------------
+  # Web tier: allow inbound HTTP from the internet + ICMP from inside the VPC
+  # (for validation/ping from an SSM session). No SSH rule anywhere.
+  WebSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Web tier - allow HTTP from the internet and ICMP from within the VPC
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP from anywhere
+        - IpProtocol: icmp
+          FromPort: -1
+          ToPort: -1
+          CidrIp: !Ref VpcCidr
+          Description: ICMP (ping) from within the VPC for validation
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound (required for SSM + yum)
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-web-sg
+
+  # App tier: reachable only from the web tier SG on app port (8080 example),
+  # plus ICMP from inside the VPC for validation from an SSM session.
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: App tier - reachable only from the web tier, plus ICMP from within the VPC
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: icmp
+          FromPort: -1
+          ToPort: -1
+          CidrIp: !Ref VpcCidr
+          Description: ICMP (ping) from within the VPC for validation
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound (NAT + SSM)
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-app-sg
+
+  AppIngressFromWeb:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref AppSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8080
+      ToPort: 8080
+      SourceSecurityGroupId: !Ref WebSecurityGroup
+      Description: App port from Web tier only
+
+  # -------------------------------------------------------------------------
+  # 6. IAM role + instance profile enabling SSM Session Manager
+  # -------------------------------------------------------------------------
+  SsmInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-ssm-role
+
+  SsmInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref SsmInstanceRole
+
+  # -------------------------------------------------------------------------
+  # 7. Web tier EC2 instances (one per AZ, Apache, Amazon Linux 2023)
+  # -------------------------------------------------------------------------
+  WebInstance1:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmazonLinux2023Ami
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref SsmInstanceProfile
+      SubnetId: !Ref PublicSubnet1
+      SecurityGroupIds:
+        - !Ref WebSecurityGroup
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euxo pipefail
+          dnf update -y
+          dnf install -y httpd
+          systemctl enable --now httpd
+          AZ=$(curl -sH "X-aws-ec2-metadata-token: $(curl -s -X PUT 'http://169.254.169.254/latest/api/token' -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')" http://169.254.169.254/latest/meta-data/placement/availability-zone)
+          cat >/var/www/html/index.html <<HTML
+          <!doctype html>
+          <html lang="en">
+            <head>
+              <meta charset="utf-8" />
+              <title>${LabName}</title>
+              <style>
+                body { font-family: system-ui, sans-serif; background:#0b132b; color:#e0fbfc; margin:0; padding:3rem; }
+                .card { max-width: 720px; margin: 0 auto; background:#1c2541; padding:2rem 2.5rem; border-radius:14px; box-shadow:0 10px 30px rgba(0,0,0,.4); }
+                h1 { color:#5bc0be; margin-top:0; }
+                .meta { color:#9fb4c7; font-size:.95rem; }
+                .tag { display:inline-block; background:#3a506b; padding:.25rem .6rem; border-radius:999px; margin-right:.35rem; font-size:.8rem; }
+              </style>
+            </head>
+            <body>
+              <div class="card">
+                <h1>${LabName}</h1>
+                <p><strong>Student:</strong> ${StudentFullName}</p>
+                <p class="meta">
+                  <span class="tag">Web Tier</span>
+                  <span class="tag">Instance 1</span>
+                  <span class="tag">AZ: $AZ</span>
+                </p>
+                <p>This page is served by Apache HTTP Server on an Amazon Linux 2023 EC2
+                   instance running in a public subnet. The instance has no SSH port open
+                   and is administered exclusively through AWS Systems Manager Session Manager.</p>
+              </div>
+            </body>
+          </html>
+          HTML
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-web-1
+        - Key: Tier
+          Value: web
+
+  WebInstance2:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmazonLinux2023Ami
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref SsmInstanceProfile
+      SubnetId: !Ref PublicSubnet2
+      SecurityGroupIds:
+        - !Ref WebSecurityGroup
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euxo pipefail
+          dnf update -y
+          dnf install -y httpd
+          systemctl enable --now httpd
+          AZ=$(curl -sH "X-aws-ec2-metadata-token: $(curl -s -X PUT 'http://169.254.169.254/latest/api/token' -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')" http://169.254.169.254/latest/meta-data/placement/availability-zone)
+          cat >/var/www/html/index.html <<HTML
+          <!doctype html>
+          <html lang="en">
+            <head>
+              <meta charset="utf-8" />
+              <title>${LabName}</title>
+              <style>
+                body { font-family: system-ui, sans-serif; background:#0b132b; color:#e0fbfc; margin:0; padding:3rem; }
+                .card { max-width: 720px; margin: 0 auto; background:#1c2541; padding:2rem 2.5rem; border-radius:14px; box-shadow:0 10px 30px rgba(0,0,0,.4); }
+                h1 { color:#5bc0be; margin-top:0; }
+                .meta { color:#9fb4c7; font-size:.95rem; }
+                .tag { display:inline-block; background:#3a506b; padding:.25rem .6rem; border-radius:999px; margin-right:.35rem; font-size:.8rem; }
+              </style>
+            </head>
+            <body>
+              <div class="card">
+                <h1>${LabName}</h1>
+                <p><strong>Student:</strong> ${StudentFullName}</p>
+                <p class="meta">
+                  <span class="tag">Web Tier</span>
+                  <span class="tag">Instance 2</span>
+                  <span class="tag">AZ: $AZ</span>
+                </p>
+                <p>This page is served by Apache HTTP Server on an Amazon Linux 2023 EC2
+                   instance running in a public subnet. The instance has no SSH port open
+                   and is administered exclusively through AWS Systems Manager Session Manager.</p>
+              </div>
+            </body>
+          </html>
+          HTML
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-web-2
+        - Key: Tier
+          Value: web
+
+  # -------------------------------------------------------------------------
+  # 8. Application tier EC2 instances (private subnets, no public IP)
+  # -------------------------------------------------------------------------
+  AppInstance1:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmazonLinux2023Ami
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref SsmInstanceProfile
+      SubnetId: !Ref PrivateSubnet1
+      SecurityGroupIds:
+        - !Ref AppSecurityGroup
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          set -euxo pipefail
+          dnf update -y
+          echo "BEM11 Lab 2 - App tier instance ready" >/etc/motd
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-app-1
+        - Key: Tier
+          Value: app
+
+  AppInstance2:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmazonLinux2023Ami
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref SsmInstanceProfile
+      SubnetId: !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref AppSecurityGroup
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          set -euxo pipefail
+          dnf update -y
+          echo "BEM11 Lab 2 - App tier instance ready" >/etc/motd
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-app-2
+        - Key: Tier
+          Value: app
+
+# ---------------------------------------------------------------------------
+# Outputs
+# ---------------------------------------------------------------------------
+Outputs:
+  VpcId:
+    Description: VPC ID
+    Value: !Ref Vpc
+    Export:
+      Name: !Sub ${ProjectName}-VpcId
+
+  PublicSubnets:
+    Description: Public subnet IDs
+    Value: !Join [",", [!Ref PublicSubnet1, !Ref PublicSubnet2]]
+
+  PrivateSubnets:
+    Description: Private subnet IDs
+    Value: !Join [",", [!Ref PrivateSubnet1, !Ref PrivateSubnet2]]
+
+  WebInstance1PublicDns:
+    Description: Public DNS of Web instance 1 (open in a browser over HTTP)
+    Value: !GetAtt WebInstance1.PublicDnsName
+
+  WebInstance2PublicDns:
+    Description: Public DNS of Web instance 2 (open in a browser over HTTP)
+    Value: !GetAtt WebInstance2.PublicDnsName
+
+  WebInstance1Id:
+    Description: Web instance 1 ID (for SSM Session Manager)
+    Value: !Ref WebInstance1
+
+  WebInstance2Id:
+    Description: Web instance 2 ID (for SSM Session Manager)
+    Value: !Ref WebInstance2
+
+  AppInstance1Id:
+    Description: App instance 1 ID (private; SSM only)
+    Value: !Ref AppInstance1
+
+  AppInstance2Id:
+    Description: App instance 2 ID (private; SSM only)
+    Value: !Ref AppInstance2

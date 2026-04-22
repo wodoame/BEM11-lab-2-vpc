@@ -1,0 +1,23 @@
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# CloudFormation / AWS local state
+packaged.yaml
+*.tmp.yaml
+.aws-sam/
+
+# Logs
+*.log
+
+# Secrets (never commit these)
+*.pem
+*.ppk
+.env
+.env.*
+credentials
+aws-exports.js
