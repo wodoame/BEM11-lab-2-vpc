@@ -6,9 +6,6 @@ Description: >
   Outbound internet for private subnets is provided via redundant NAT
   Gateways (one per Availability Zone).
 
-# ---------------------------------------------------------------------------
-# Parameters
-# ---------------------------------------------------------------------------
 Parameters:
   ProjectName:
     Type: String
@@ -57,14 +54,7 @@ Parameters:
       SSM public parameter that always resolves to the latest Amazon Linux
       2023 AMI for the current region. Keeps the template region-agnostic.
 
-# ---------------------------------------------------------------------------
-# Resources
-# ---------------------------------------------------------------------------
 Resources:
-
-  # -------------------------------------------------------------------------
-  # 1. Core networking: VPC + Internet Gateway
-  # -------------------------------------------------------------------------
   Vpc:
     Type: AWS::EC2::VPC
     Properties:
@@ -88,9 +78,6 @@ Resources:
       VpcId: !Ref Vpc
       InternetGatewayId: !Ref InternetGateway
 
-  # -------------------------------------------------------------------------
-  # 2. Subnets (2 public + 2 private across two AZs)
-  # -------------------------------------------------------------------------
   PublicSubnet1:
     Type: AWS::EC2::Subnet
     Properties:
@@ -143,9 +130,6 @@ Resources:
         - Key: Tier
           Value: private
 
-  # -------------------------------------------------------------------------
-  # 3. Redundant NAT Gateways (one per AZ for high availability)
-  # -------------------------------------------------------------------------
   NatEip1:
     Type: AWS::EC2::EIP
     DependsOn: InternetGatewayAttachment
@@ -182,9 +166,6 @@ Resources:
         - Key: Name
           Value: !Sub ${ProjectName}-nat-gw-az2
 
-  # -------------------------------------------------------------------------
-  # 4. Route tables
-  # -------------------------------------------------------------------------
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
@@ -213,8 +194,6 @@ Resources:
       SubnetId: !Ref PublicSubnet2
       RouteTableId: !Ref PublicRouteTable
 
-  # One private route table per AZ so each private subnet uses its own NAT
-  # Gateway; losing one AZ's NAT does not affect the other AZ.
   PrivateRouteTable1:
     Type: AWS::EC2::RouteTable
     Properties:
@@ -257,11 +236,6 @@ Resources:
       SubnetId: !Ref PrivateSubnet2
       RouteTableId: !Ref PrivateRouteTable2
 
-  # -------------------------------------------------------------------------
-  # 5. Security Groups
-  # -------------------------------------------------------------------------
-  # Web tier: allow inbound HTTP from the internet + ICMP from inside the VPC
-  # (for validation/ping from an SSM session). No SSH rule anywhere.
   WebSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -286,8 +260,6 @@ Resources:
         - Key: Name
           Value: !Sub ${ProjectName}-web-sg
 
-  # App tier: reachable only from the web tier SG on app port (8080 example),
-  # plus ICMP from inside the VPC for validation from an SSM session.
   AppSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -317,9 +289,6 @@ Resources:
       SourceSecurityGroupId: !Ref WebSecurityGroup
       Description: App port from Web tier only
 
-  # -------------------------------------------------------------------------
-  # 6. IAM role + instance profile enabling SSM Session Manager
-  # -------------------------------------------------------------------------
   SsmInstanceRole:
     Type: AWS::IAM::Role
     Properties:
@@ -342,9 +311,6 @@ Resources:
       Roles:
         - !Ref SsmInstanceRole
 
-  # -------------------------------------------------------------------------
-  # 7. Web tier EC2 instances (one per AZ, Apache, Amazon Linux 2023)
-  # -------------------------------------------------------------------------
   WebInstance1:
     Type: AWS::EC2::Instance
     Properties:
@@ -451,9 +417,6 @@ Resources:
         - Key: Tier
           Value: web
 
-  # -------------------------------------------------------------------------
-  # 8. Application tier EC2 instances (private subnets, no public IP)
-  # -------------------------------------------------------------------------
   AppInstance1:
     Type: AWS::EC2::Instance
     Properties:
@@ -496,9 +459,6 @@ Resources:
         - Key: Tier
           Value: app
 
-# ---------------------------------------------------------------------------
-# Outputs
-# ---------------------------------------------------------------------------
 Outputs:
   VpcId:
     Description: VPC ID
