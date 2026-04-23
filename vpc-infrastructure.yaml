@@ -6,6 +6,7 @@ Description: >
   Outbound internet for private subnets is provided via redundant NAT
   Gateways (one per Availability Zone).
 
+# Stack inputs: resource prefix, lab page text, VPC/subnet CIDRs, instance type, AMI lookup.
 Parameters:
   ProjectName:
     Type: String
@@ -31,15 +32,19 @@ Parameters:
   PublicSubnet1Cidr:
     Type: String
     Default: 10.20.1.0/24
+    Description: Public subnet AZ1 CIDR (web + NAT).
   PublicSubnet2Cidr:
     Type: String
     Default: 10.20.2.0/24
+    Description: Public subnet AZ2 CIDR (web + NAT).
   PrivateSubnet1Cidr:
     Type: String
     Default: 10.20.11.0/24
+    Description: Private subnet AZ1 CIDR (app tier).
   PrivateSubnet2Cidr:
     Type: String
     Default: 10.20.12.0/24
+    Description: Private subnet AZ2 CIDR (app tier).
 
   InstanceType:
     Type: String
@@ -54,7 +59,9 @@ Parameters:
       SSM public parameter that always resolves to the latest Amazon Linux
       2023 AMI for the current region. Keeps the template region-agnostic.
 
+# --- Resources ---
 Resources:
+  # VPC + IGW: DNS enabled for default hostnames and resolver behavior.
   Vpc:
     Type: AWS::EC2::VPC
     Properties:
@@ -78,6 +85,7 @@ Resources:
       VpcId: !Ref Vpc
       InternetGatewayId: !Ref InternetGateway
 
+  # Two public subnets (first two AZs): auto public IP for web/NAT.
   PublicSubnet1:
     Type: AWS::EC2::Subnet
     Properties:
@@ -130,6 +138,7 @@ Resources:
         - Key: Tier
           Value: private
 
+  # Elastic IPs + NAT per AZ so private subnets keep local egress if one AZ fails.
   NatEip1:
     Type: AWS::EC2::EIP
     DependsOn: InternetGatewayAttachment
@@ -166,6 +175,7 @@ Resources:
         - Key: Name
           Value: !Sub ${ProjectName}-nat-gw-az2
 
+  # Public routes: default to IGW. Private routes: each subnet uses NAT in same AZ.
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
@@ -236,6 +246,7 @@ Resources:
       SubnetId: !Ref PrivateSubnet2
       RouteTableId: !Ref PrivateRouteTable2
 
+  # Web: HTTP from internet; app: only from web SG (8080) via separate rule below.
   WebSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -279,6 +290,7 @@ Resources:
         - Key: Name
           Value: !Sub ${ProjectName}-app-sg
 
+  # Cross-reference SGs after both exist (cleaner than inline SourceSecurityGroupId on App SG).
   AppIngressFromWeb:
     Type: AWS::EC2::SecurityGroupIngress
     Properties:
@@ -289,6 +301,7 @@ Resources:
       SourceSecurityGroupId: !Ref WebSecurityGroup
       Description: App port from Web tier only
 
+  # EC2 -> SSM endpoints (no SSH keys or port 22).
   SsmInstanceRole:
     Type: AWS::IAM::Role
     Properties:
@@ -311,6 +324,7 @@ Resources:
       Roles:
         - !Ref SsmInstanceRole
 
+  # Web: Apache + lab landing page. App: minimal bootstrap in private subnets.
   WebInstance1:
     Type: AWS::EC2::Instance
     Properties:
@@ -459,6 +473,7 @@ Resources:
         - Key: Tier
           Value: app
 
+# Values for console, scripts, or nested stacks / exports.
 Outputs:
   VpcId:
     Description: VPC ID
